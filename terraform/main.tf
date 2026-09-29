@@ -74,6 +74,14 @@ resource "aws_sqs_queue" "file_events" {
   }
 }
 
+resource "aws_sqs_queue_redrive_allow_policy" "dead_letter" {
+  queue_url = aws_sqs_queue.dead_letter.id
+  redrive_allow_policy = jsonencode({
+    redrivePermission = "byQueue"
+    sourceQueueArns   = [aws_sqs_queue.file_events.arn]
+  })
+}
+
 data "aws_iam_policy_document" "s3_to_sqs" {
   statement {
     sid     = "AllowS3EventNotifications"
@@ -210,6 +218,16 @@ resource "aws_iam_role_policy" "processor" {
   policy = data.aws_iam_policy_document.processor.json
 }
 
+resource "aws_cloudwatch_log_group" "upload_url" {
+  name              = "/aws/lambda/${local.name_prefix}-upload-url"
+  retention_in_days = var.log_retention_days
+}
+
+resource "aws_cloudwatch_log_group" "processor" {
+  name              = "/aws/lambda/${local.name_prefix}-processor"
+  retention_in_days = var.log_retention_days
+}
+
 data "archive_file" "upload_url" {
   type        = "zip"
   source_file = "${path.module}/../lambdas/upload_url/handler.py"
@@ -232,12 +250,20 @@ resource "aws_lambda_function" "upload_url" {
   timeout          = 10
   memory_size      = 256
 
+  logging_config {
+    application_log_level = "INFO"
+    log_format            = "JSON"
+    system_log_level      = "WARN"
+  }
+
   environment {
     variables = {
       UPLOAD_BUCKET         = aws_s3_bucket.uploads.id
       URL_EXPIRATION_SECONDS = tostring(var.upload_url_expiration_seconds)
     }
   }
+
+  depends_on = [aws_cloudwatch_log_group.upload_url, aws_iam_role_policy.upload_url]
 }
 
 resource "aws_lambda_function" "processor" {
@@ -250,11 +276,19 @@ resource "aws_lambda_function" "processor" {
   timeout          = var.processor_timeout_seconds
   memory_size      = 256
 
+  logging_config {
+    application_log_level = "INFO"
+    log_format            = "JSON"
+    system_log_level      = "WARN"
+  }
+
   environment {
     variables = {
       METADATA_TABLE = aws_dynamodb_table.file_metadata.name
     }
   }
+
+  depends_on = [aws_cloudwatch_log_group.processor, aws_iam_role_policy.processor]
 }
 
 resource "aws_lambda_event_source_mapping" "file_events" {
@@ -263,6 +297,10 @@ resource "aws_lambda_event_source_mapping" "file_events" {
   batch_size                         = 10
   maximum_batching_window_in_seconds = 5
   function_response_types            = ["ReportBatchItemFailures"]
+
+  scaling_config {
+    maximum_concurrency = 10
+  }
 }
 
 resource "aws_apigatewayv2_api" "uploads" {
@@ -296,4 +334,58 @@ resource "aws_lambda_permission" "api_gateway" {
   function_name = aws_lambda_function.upload_url.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.uploads.execution_arn}/*/*"
+}
+
+resource "aws_cloudwatch_metric_alarm" "upload_url_errors" {
+  alarm_name          = "${local.name_prefix}-upload-url-errors"
+  alarm_description   = "Upload URL Lambda returned one or more errors."
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.alarm_notification_arns
+
+  dimensions = {
+    FunctionName = aws_lambda_function.upload_url.function_name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "processor_errors" {
+  alarm_name          = "${local.name_prefix}-processor-errors"
+  alarm_description   = "Processor Lambda returned one or more invocation errors."
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.alarm_notification_arns
+
+  dimensions = {
+    FunctionName = aws_lambda_function.processor.function_name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "dead_letter_messages" {
+  alarm_name          = "${local.name_prefix}-dlq-messages"
+  alarm_description   = "One or more messages require investigation in the DLQ."
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 60
+  statistic           = "Maximum"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.alarm_notification_arns
+
+  dimensions = {
+    QueueName = aws_sqs_queue.dead_letter.name
+  }
 }

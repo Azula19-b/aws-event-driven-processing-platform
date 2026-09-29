@@ -22,3 +22,13 @@ output "metadata_table_name" {
   description = "DynamoDB table containing processed file metadata."
   value       = aws_dynamodb_table.file_metadata.name
 }
+
+output "upload_url_log_group" {
+  description = "CloudWatch log group for the upload URL Lambda."
+  value       = aws_cloudwatch_log_group.upload_url.name
+}
+
+output "processor_log_group" {
+  description = "CloudWatch log group for the processor Lambda."
+  value       = aws_cloudwatch_log_group.processor.name
+}

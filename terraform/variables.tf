@@ -60,3 +60,15 @@ variable "max_receive_count" {
   type        = number
   default     = 5
 }
+
+variable "log_retention_days" {
+  description = "Number of days Lambda application logs are retained."
+  type        = number
+  default     = 30
+}
+
+variable "alarm_notification_arns" {
+  description = "SNS topic ARNs notified by CloudWatch alarms. Empty disables actions."
+  type        = list(string)
+  default     = []
+}

@@ -1,15 +1,17 @@
 """Lambda handler that returns a validated, short-lived S3 upload URL."""
 
 import base64
+import binascii
 import json
 import os
 import re
+import time
 import uuid
 
 import boto3
 
 
-S3_CLIENT = boto3.client("s3")
+S3_CLIENT = None
 BUCKET_NAME = os.environ.get("UPLOAD_BUCKET", "")
 URL_EXPIRATION_SECONDS = int(os.environ.get("URL_EXPIRATION_SECONDS", "900"))
 MAX_REQUEST_BODY_BYTES = 16_384
@@ -20,18 +22,71 @@ ALLOWED_CONTENT_TYPES = {
 }
 
 
+def _s3_client():
+    """Create the AWS client lazily so imports and unit tests stay deterministic."""
+    global S3_CLIENT
+    if S3_CLIENT is None:
+        S3_CLIENT = boto3.client("s3")
+    return S3_CLIENT
+
+
 def _response(status_code, body):
     return {
         "statusCode": status_code,
-        "headers": {"content-type": "application/json"},
+        "headers": {
+            "content-type": "application/json",
+            "cache-control": "no-store",
+        },
         "body": json.dumps(body),
     }
+
+
+def _request_id(event, context):
+    lambda_request_id = getattr(context, "aws_request_id", None)
+    api_request_id = event.get("requestContext", {}).get("requestId")
+    return lambda_request_id or api_request_id or "unknown"
+
+
+def _log(request_id, event_type, status, **details):
+    log_entry = {
+        "request_id": request_id,
+        "file_id": details.pop("file_id", None),
+        "event_type": event_type,
+        "status": status,
+        "error": details.pop("error", None),
+        **details,
+    }
+    print(json.dumps(log_entry, default=str, separators=(",", ":")))
+
+
+def _metric(metric_name, value=1):
+    print(
+        json.dumps(
+            {
+                "_aws": {
+                    "Timestamp": time.time_ns() // 1_000_000,
+                    "CloudWatchMetrics": [
+                        {
+                            "Namespace": "EventProcessingPlatform",
+                            "Dimensions": [["Service"]],
+                            "Metrics": [{"Name": metric_name, "Unit": "Count"}],
+                        }
+                    ],
+                },
+                "Service": "UploadUrl",
+                metric_name: value,
+            },
+            separators=(",", ":"),
+        )
+    )
 
 
 def _request_body(event):
     raw_body = event.get("body")
     if raw_body is None:
         raise ValueError("Request body is required.")
+    if not isinstance(raw_body, str):
+        raise ValueError("Request body must be a JSON string.")
     if event.get("isBase64Encoded"):
         raw_body = base64.b64decode(raw_body, validate=True).decode("utf-8")
     if len(raw_body.encode("utf-8")) > MAX_REQUEST_BODY_BYTES:
@@ -63,12 +118,15 @@ def _validated_upload(body):
 
 def lambda_handler(event, context):
     """Validate an API request and return an S3 PUT presigned URL."""
+    request_id = _request_id(event, context)
     try:
+        if not BUCKET_NAME:
+            raise RuntimeError("UPLOAD_BUCKET is not configured.")
         body = _request_body(event)
         file_name, content_type = _validated_upload(body)
         file_id = str(uuid.uuid4())
         object_key = f"uploads/{file_id}/{file_name}"
-        upload_url = S3_CLIENT.generate_presigned_url(
+        upload_url = _s3_client().generate_presigned_url(
             "put_object",
             Params={
                 "Bucket": BUCKET_NAME,
@@ -78,6 +136,8 @@ def lambda_handler(event, context):
             ExpiresIn=URL_EXPIRATION_SECONDS,
             HttpMethod="PUT",
         )
+        _log(request_id, "upload_url.generated", "success", file_id=file_id)
+        _metric("UploadUrlsGenerated")
         return _response(
             201,
             {
@@ -87,7 +147,14 @@ def lambda_handler(event, context):
                 "expires_in": URL_EXPIRATION_SECONDS,
             },
         )
-    except (ValueError, TypeError, json.JSONDecodeError, base64.binascii.Error) as error:
-        return _response(400, {"error": str(error)})
-    except Exception:
-        return _response(500, {"error": "Unable to generate an upload URL."})
+    except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError, binascii.Error) as error:
+        _log(request_id, "upload_url.rejected", "invalid", error=str(error))
+        _metric("UploadUrlValidationErrors")
+        return _response(400, {"error": str(error), "request_id": request_id})
+    except Exception as error:
+        _log(request_id, "upload_url.failed", "error", error=str(error))
+        _metric("UploadUrlErrors")
+        return _response(
+            500,
+            {"error": "Unable to generate an upload URL.", "request_id": request_id},
+        )
