@@ -1,0 +1,10 @@
+aws_region       = "us-east-1"
+project_name     = "event-processing-platform"
+environment      = "dev"
+log_retention_days = 30
+
+# Secure default. Use NONE only for a deliberately public demo endpoint.
+api_authorization_type = "AWS_IAM"
+
+# Optional SNS topics that receive CloudWatch alarm notifications.
+alarm_notification_arns = []

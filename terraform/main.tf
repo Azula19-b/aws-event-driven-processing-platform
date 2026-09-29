@@ -258,7 +258,7 @@ resource "aws_lambda_function" "upload_url" {
 
   environment {
     variables = {
-      UPLOAD_BUCKET         = aws_s3_bucket.uploads.id
+      UPLOAD_BUCKET          = aws_s3_bucket.uploads.id
       URL_EXPIRATION_SECONDS = tostring(var.upload_url_expiration_seconds)
     }
   }
@@ -317,15 +317,21 @@ resource "aws_apigatewayv2_integration" "upload_url" {
 }
 
 resource "aws_apigatewayv2_route" "create_upload" {
-  api_id    = aws_apigatewayv2_api.uploads.id
-  route_key = "POST /uploads"
-  target    = "integrations/${aws_apigatewayv2_integration.upload_url.id}"
+  api_id             = aws_apigatewayv2_api.uploads.id
+  route_key          = "POST /uploads"
+  target             = "integrations/${aws_apigatewayv2_integration.upload_url.id}"
+  authorization_type = var.api_authorization_type
 }
 
 resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.uploads.id
   name        = "$default"
   auto_deploy = true
+
+  default_route_settings {
+    throttling_burst_limit = 50
+    throttling_rate_limit  = 25
+  }
 }
 
 resource "aws_lambda_permission" "api_gateway" {

@@ -72,3 +72,14 @@ variable "alarm_notification_arns" {
   type        = list(string)
   default     = []
 }
+
+variable "api_authorization_type" {
+  description = "Authorization enforced by the upload route. AWS_IAM is the secure default."
+  type        = string
+  default     = "AWS_IAM"
+
+  validation {
+    condition     = contains(["AWS_IAM", "NONE"], var.api_authorization_type)
+    error_message = "api_authorization_type must be AWS_IAM or NONE."
+  }
+}

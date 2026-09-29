@@ -15,7 +15,6 @@ venv/
 *.tfplan
 *.tfvars
 !*.tfvars.example
-.terraform.lock.hcl
 crash.log
 crash.*.log
 
