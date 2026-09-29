@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+.env
+.env.*
+
+# Terraform working files, plans, and state can contain sensitive values.
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+.terraform.lock.hcl
+crash.log
+crash.*.log
+
+# Local Lambda build artifacts.
+*.zip
+
+# Editor and operating-system files.
+.DS_Store
+.idea/
+.vscode/
